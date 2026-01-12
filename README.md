@@ -116,3 +116,52 @@ This section covers common issues related to the **TMC2100 driver**, **T8 lead s
     * **Cause:** Incorrect resistor for the optocoupler LED.
     * **Solution:** The 1kΩ resistor is designed for 5V pulses. If using a **24V PLC signal**, swap the 1kΩ resistor for a **2.2kΩ** resistor to protect the PC81
     * 
+
+
+## 📝 Project Netlist: Precision Stepper Controller
+
+### 1. Power Supply Rail (5V Regulation)
+| Signal | Component A | Component B | Purpose |
+| :--- | :--- | :--- | :--- |
+| **V_INPUT** | DC Terminal (+) | Regulator (VIN), TMC2100 (VMOT) | Main Motor Power (12-24V) |
+| **GND** | DC Terminal (-) | All GND Pins (Nano, TMC, Reg, Opto) | Common Ground Plane |
+| **+5V** | Regulator (VOUT) | Nano (5V), Opto (Pin 4), Encoder (VCC) | Logic Power Rail |
+| **FILT_IN** | Capacitor 10uF (+) | V_INPUT / GND | Input Voltage Smoothing |
+| **FILT_OUT**| Capacitor 22uF (+) | +5V / GND | Logic Voltage Smoothing |
+
+---
+
+### 2. Opto-Isolated Pulse Trigger (Pin 9)
+| Signal | Component A | Component B | Purpose |
+| :--- | :--- | :--- | :--- |
+| **EXT_PULSE+**| Pulse Terminal (+)| Resistor 1kΩ (R1) | External Signal Input |
+| **OPTO_IN** | Resistor 1kΩ (R1) | PC817 Opto (Pin 1: Anode) | Current Limiting for LED |
+| **EXT_PULSE-**| Pulse Terminal (-)| PC817 Opto (Pin 2: Cathode) | Signal Return (Isolated) |
+| **OPTO_OUT** | PC817 (Pin 3: Emit) | **Arduino D9** & 10kΩ Resistor (R2) | Isolated Pulse Signal |
+| **OPTO_BIAS** | PC817 (Pin 4: Coll) | +5V Rail | Pull-up Supply |
+| **PULL_DOWN** | Resistor 10kΩ (R2) | GND | Logic Stability (Low) |
+
+---
+
+### 3. Logic & Control (Arduino Nano)
+| Signal | Component A | Component B | Purpose |
+| :--- | :--- | :--- | :--- |
+| **STEP** | Arduino D2 | TMC2100 (STEP Pin) | Motor Step Pulses |
+| **DIR** | Arduino D3 | TMC2100 (DIR Pin) | Direction Logic |
+| **ENABLE** | Arduino D4 | TMC2100 (EN Pin) | Motor Power Enable |
+| **ENC_A** | Arduino D5 | Rotary Encoder (A) | Rotation Sensing |
+| **ENC_B** | Arduino D6 | Rotary Encoder (B) | Rotation Sensing |
+| **ENC_SW** | Arduino D7 | Rotary Encoder (SW) | Button Press Sensing |
+| **LIMIT** | Arduino D8 | Home Switch Terminal | Homing Interrupt (to GND) |
+| **LED** | Arduino D13 | Onboard LED / Header | Status/Home Indicator |
+
+---
+
+### 4. Stepper Motor Output (TMC2100)
+| Signal | Component A | Component B | Purpose |
+| :--- | :--- | :--- | :--- |
+| **MOT_A1** | TMC2100 (M1A) | Motor Header Pin 1 | Stepper Phase A |
+| **MOT_A2** | TMC2100 (M1B) | Motor Header Pin 2 | Stepper Phase A |
+| **MOT_B1** | TMC2100 (M2A) | Motor Header Pin 3 | Stepper Phase B |
+| **MOT_B2** | TMC2100 (M2B) | Motor Header Pin 4 | Stepper Phase B |
+

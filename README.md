@@ -2,7 +2,7 @@
 Code for arduino to move  a dust boot for a cnc up and down. Created with Gemini AI
 # Precision Stepper Control System (T8 Lead Screw)
 
-An Arduino-based linear motion controller featuring a **TMC2100 SilentStepStick**, opto-isolated triggering, and a custom calibration engine.
+An Arduino-based linear motion controller featuring a **DRV8825**, opto-isolated triggering, and a custom calibration engine.
 
 ## 🚀 Features
 - **Silent Operation:** Optimized for TMC2100 stealthChop.

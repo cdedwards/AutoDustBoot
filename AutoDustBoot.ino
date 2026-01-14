@@ -1,230 +1,173 @@
+/*
+  NEMA17 Control for DRV8825
+  - Jogging, Homing, and EEPROM Save/Restore
+  - Hardware: Pins 2/3 for Encoder, 9/5 for Step/Dir, 6 for Enable
+*/
+
 #include <AccelStepper.h>
+#include <Encoder.h>
+#include <Bounce2.h>
 #include <EEPROM.h>
 
-// --- Hardware Constants ---
-const float STEPS_PER_MM = 400.0;     
-const float BACKOFF_MM = 2.54;        
-const long BACKOFF_STEPS = BACKOFF_MM * STEPS_PER_MM;
+// -------------------- PIN DEFINITIONS --------------------
+const uint8_t PIN_STEP = 9;      // Changed to 9 as found in previous troubleshooting
+const uint8_t PIN_DIR  = 5;      
+const uint8_t PIN_EN   = 6;      // DRV8825 Enable Pin
 
-// --- Pins ---
-#define STEP_PIN 2
-#define DIR_PIN 3
-#define EN_PIN 4      
-#define ENC_A 5
-#define ENC_B 6
-#define ENC_SW 7
-#define LIMIT_SW 8
-#define EXT_SIGNAL_PIN 9  
-#define LED_HOME 13
+const uint8_t PIN_ENC_A = 2;
+const uint8_t PIN_ENC_B = 3;
+const uint8_t PIN_BTN = 7;
+const uint8_t PIN_LIMIT_LEFT = 8;
+const uint8_t PIN_HOME_LED = LED_BUILTIN; //10;
 
-AccelStepper stepper(AccelStepper::DRIVER, STEP_PIN, DIR_PIN);
+// -------------------- MOTION CONFIG --------------------
+const float STEPS_PER_REV = 200.0f;
+const float MICROSTEPS     = 32.0f;     // DRV8825 common setting (M0,M1,M2 all HIGH)
+const float LEAD_MM_PER_REV = 8.0f;     // Standard T8 lead screw
+const float MM_PER_INCH = 25.4f;
+const float HOME_OFFSET_INCH = 0.1f; 
+const int8_t HOME_OFFSET_SIGN = +1;
 
-// --- EEPROM Addresses ---
-const int ADDR_LIMIT = 0;
-const int ADDR_SAVED = 10;
+const long STEPS_PER_DETENT = 32;       // Higher value for DRV8825 microstepping
+const float MAX_SPEED = 1500.0f;        // steps/sec
+const float ACCEL     = 2000.0f;        // steps/sec^2
+const float HOMING_SPEED = 800.0f;
 
-// --- Variables ---
-long savedPosition = 0;
-long customMaxLimit = 81280; 
-int lastClk;
+const uint16_t DOUBLE_PRESS_MS = 400;
 
-// External Trigger Logic (Pulse based)
-bool lastExtSignalState = LOW;
-bool targetIsBottom = false; // Toggle state: false = Home, true = Bottom
+// -------------------- EEPROM SAVE --------------------
+const int EEPROM_ADDR_MAGIC = 0;
+const int EEPROM_ADDR_POS   = 1;
+const uint8_t EEPROM_MAGIC  = 0xA5;
 
-unsigned long lastDebounceTime = 0; 
-const unsigned long debounceDelay = 50; 
-unsigned long lastActivityTime = 0;
-const unsigned long sleepDelay = 5000; 
+// -------------------- OBJECTS --------------------
+AccelStepper stepper(AccelStepper::DRIVER, PIN_STEP, PIN_DIR);
+Encoder enc(PIN_ENC_A, PIN_ENC_B);
+Bounce2::Button btn = Bounce2::Button();
+Bounce2::Button limitLeft = Bounce2::Button();
 
-bool isAsleep = false;
-bool isCalibrating = false;
-bool lastButtonState = HIGH;
-int pressCount = 0;
-unsigned long lastPressTime = 0;
-unsigned long buttonDownTime = 0;
-bool wasJogging = false; 
+// -------------------- STATE --------------------
+enum Mode { MODE_HOMING, MODE_IDLE, MODE_MOVING_TO_TARGET };
+Mode mode = MODE_HOMING;
 
-const int doubleClickWindow = 400;
-const int longPressWindow = 2000;
+long homePosSteps = 0;
+long savedPosSteps = 0;
+bool hasSaved = false;
+long lastEncCount = 0;
+bool waitingForSecondPress = false;
+uint32_t firstPressTimeMs = 0;
+bool toggleToSavedNext = true;
 
+// -------------------- HELPERS --------------------
+long inchesToSteps(float inches) {
+  float mm = inches * MM_PER_INCH;
+  float revs = mm / LEAD_MM_PER_REV;
+  float steps = revs * STEPS_PER_REV * MICROSTEPS;
+  return (long)lround(steps);
+}
+
+void loadSavedFromEEPROM() {
+  uint8_t m = EEPROM.read(EEPROM_ADDR_MAGIC);
+  if (m == EEPROM_MAGIC) {
+    long p;
+    EEPROM.get(EEPROM_ADDR_POS, p);
+    savedPosSteps = p;
+    hasSaved = true;
+  }
+}
+
+void saveToEEPROM(long pos) {
+  EEPROM.write(EEPROM_ADDR_MAGIC, EEPROM_MAGIC);
+  EEPROM.put(EEPROM_ADDR_POS, pos);
+  savedPosSteps = pos;
+  hasSaved = true;
+}
+
+void startMoveTo(long targetSteps) {
+  stepper.moveTo(targetSteps);
+  mode = MODE_MOVING_TO_TARGET;
+}
+
+// -------------------- SETUP / LOOP --------------------
 void setup() {
   Serial.begin(115200);
-  pinMode(ENC_A, INPUT);
-  pinMode(ENC_B, INPUT);
-  pinMode(ENC_SW, INPUT_PULLUP);
-  pinMode(LIMIT_SW, INPUT_PULLUP);
-  pinMode(EXT_SIGNAL_PIN, INPUT); // Set to INPUT for High Pulse signal
-  pinMode(LED_HOME, OUTPUT);
-  pinMode(EN_PIN, OUTPUT);
-  
-  EEPROM.get(ADDR_LIMIT, customMaxLimit);
-  EEPROM.get(ADDR_SAVED, savedPosition);
-  if(customMaxLimit <= 100) customMaxLimit = 81280; 
 
-  wakeUp();
-  stepper.setMaxSpeed(2000); 
-  stepper.setAcceleration(400); 
-  
-  lastClk = digitalRead(ENC_A);
-  performHoming();
+  pinMode(PIN_EN, OUTPUT);
+  digitalWrite(PIN_EN, LOW); // DRV8825 ENABLE is active LOW
+
+  btn.attach(PIN_BTN, INPUT_PULLUP);
+  btn.interval(5);
+  btn.setPressedState(LOW);
+
+  limitLeft.attach(PIN_LIMIT_LEFT, INPUT_PULLUP);
+  limitLeft.interval(5);
+  limitLeft.setPressedState(LOW);
+
+  pinMode(PIN_HOME_LED, OUTPUT);
+
+  stepper.setMaxSpeed(MAX_SPEED);
+  stepper.setAcceleration(ACCEL);
+
+  loadSavedFromEEPROM();
+  lastEncCount = enc.read();
+
+  Serial.println("Starting Homing...");
 }
 
 void loop() {
-  handleEncoderRotation();
-  handleEncoderButton();
-  handleExternalPulse(); // New logic for pulse trigger
-  stepper.run();
-  
-  // Dynamic Acceleration
-  if (abs(stepper.speed()) > 800) {
-    stepper.setAcceleration(1200); 
+  btn.update();
+  limitLeft.update();
+
+  if (mode == MODE_HOMING) {
+    if (!limitLeft.isPressed()) {
+      stepper.setSpeed(-HOMING_SPEED);
+      stepper.runSpeed();
+    } else {
+      stepper.setCurrentPosition(0);
+      homePosSteps = HOME_OFFSET_SIGN * inchesToSteps(HOME_OFFSET_INCH);
+      startMoveTo(homePosSteps);
+      digitalWrite(PIN_HOME_LED, HIGH);
+      Serial.println("Homed. Moving to Offset...");
+    }
   } else {
-    stepper.setAcceleration(400);
-  }
-
-  if (isCalibrating) {
-    digitalWrite(LED_HOME, (millis() / 100) % 2); 
-  } else {
-    checkSleepTimer();
-  }
-}
-
-void wakeUp() {
-  if (isAsleep) {
-    digitalWrite(EN_PIN, LOW);
-    isAsleep = false;
-  }
-  lastActivityTime = millis();
-}
-
-void checkSleepTimer() {
-  if (!stepper.isRunning() && !isAsleep && !isCalibrating) {
-    if (millis() - lastActivityTime > sleepDelay) {
-      digitalWrite(EN_PIN, HIGH);
-      isAsleep = true;
-      Serial.println("Sleep Mode Active");
+    stepper.run();
+    if (mode == MODE_MOVING_TO_TARGET && stepper.distanceToGo() == 0) {
+      mode = MODE_IDLE;
     }
-  }
-}
 
-void handleExternalPulse() {
-  bool currentSignal = digitalRead(EXT_SIGNAL_PIN);
-  
-  // Check for Rising Edge (LOW to HIGH)
-  if (currentSignal == HIGH && lastExtSignalState == LOW) {
-    if (!isCalibrating) {
-      wakeUp();
-      
-      // Toggle the target
-      targetIsBottom = !targetIsBottom; 
-      
-      if (targetIsBottom) {
-        Serial.println("Pulse Detected: Moving to BOTTOM");
-        stepper.moveTo(customMaxLimit);
-      } else {
-        Serial.println("Pulse Detected: Moving to HOME");
-        stepper.moveTo(0);
+    if (mode == MODE_IDLE) {
+      long c = enc.read();
+      if (abs(c - lastEncCount) >= 4) {
+        long delta = (c - lastEncCount) / 4;
+        lastEncCount = c;
+        stepper.moveTo(stepper.targetPosition() + (delta * STEPS_PER_DETENT));
       }
     }
-    delay(50); // Simple debounce for the external pulse
-  }
-  lastExtSignalState = currentSignal;
-}
-
-void performHoming() {
-  wakeUp();
-  stepper.setSpeed(-500); 
-  while (digitalRead(LIMIT_SW) == HIGH) {
-    stepper.runSpeed();
-  }
-  stepper.setCurrentPosition(0);
-  stepper.moveTo(BACKOFF_STEPS);
-  while (stepper.distanceToGo() != 0) { stepper.run(); }
-  stepper.setCurrentPosition(0); 
-  digitalWrite(LED_HOME, HIGH);
-  targetIsBottom = false; // Reset toggle state after homing
-}
-
-void handleEncoderRotation() {
-  int currentClk = digitalRead(ENC_A);
-  if (currentClk != lastClk && currentClk == LOW) {
-    wakeUp();
-    bool buttonHeld = (digitalRead(ENC_SW) == LOW);
-    long newTarget = stepper.currentPosition();
-    
-    int moveAmount = buttonHeld ? 800 : 100;
-    if (buttonHeld) wasJogging = true; 
-
-    newTarget += (digitalRead(ENC_B) != currentClk) ? moveAmount : -moveAmount;
-
-    if (!isCalibrating) newTarget = constrain(newTarget, 0, customMaxLimit);
-    
-    stepper.moveTo(newTarget);
-    lastActivityTime = millis();
-  }
-  lastClk = currentClk;
-}
-
-void handleEncoderButton() {
-  bool reading = digitalRead(ENC_SW);
-
-  if (reading == LOW && lastButtonState == HIGH) {
-    buttonDownTime = millis();
-    wasJogging = false; 
-    wakeUp();
   }
 
-  if (reading != lastButtonState) {
-    if (reading == HIGH) { 
-      unsigned long duration = millis() - buttonDownTime;
-      
-      if (!wasJogging) {
-        if (isCalibrating && duration < 1000) {
-          customMaxLimit = stepper.currentPosition();
-          EEPROM.put(ADDR_LIMIT, customMaxLimit);
-          isCalibrating = false;
-          digitalWrite(LED_HOME, HIGH);
-          Serial.println("Calibration Saved");
-        } 
-        else if (!isCalibrating) {
-          if (duration > longPressWindow) {
-            isCalibrating = true;
-            Serial.println("Mode: Calibrating");
-          } else {
-            pressCount++;
-            lastPressTime = millis();
-          }
-        }
+  // Button Logic (Single/Double Press)
+  if (mode != MODE_HOMING && btn.pressed()) {
+    if (!waitingForSecondPress) {
+      waitingForSecondPress = true;
+      firstPressTimeMs = millis();
+    } else {
+      if (millis() - firstPressTimeMs <= DOUBLE_PRESS_MS) {
+        waitingForSecondPress = false;
+        saveToEEPROM(stepper.currentPosition());
+        Serial.println("Position Saved to EEPROM!");
       }
     }
-    lastDebounceTime = millis(); 
   }
 
-  if (pressCount > 0 && (millis() - lastPressTime > doubleClickWindow)) {
-    if (pressCount == 1) {
-      stepper.moveTo(0);
-      targetIsBottom = false; // Sync pulse state
-    } 
-    else if (pressCount >= 2) {
-      if (stepper.currentPosition() == 0) {
-        stepper.moveTo(savedPosition);
-      } else {
-        savedPosition = stepper.currentPosition();
-        EEPROM.put(ADDR_SAVED, savedPosition);
-        visualConfirm(); 
-        Serial.println("Position Programmed");
-      }
+  if (waitingForSecondPress && (millis() - firstPressTimeMs > DOUBLE_PRESS_MS)) {
+    waitingForSecondPress = false;
+    if (toggleToSavedNext && hasSaved) {
+      startMoveTo(savedPosSteps);
+      Serial.println("Moving to SAVED");
+    } else {
+      startMoveTo(homePosSteps);
+      Serial.println("Moving to HOME");
     }
-    pressCount = 0;
-  }
-  lastButtonState = reading;
-}
-
-void visualConfirm() {
-  for(int i=0; i<3; i++) {
-    digitalWrite(LED_HOME, LOW); delay(80);
-    digitalWrite(LED_HOME, HIGH); delay(80);
+    toggleToSavedNext = !toggleToSavedNext;
   }
 }
-

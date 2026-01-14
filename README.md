@@ -5,7 +5,6 @@ Code for arduino to move  a dust boot for a cnc up and down. Created with Gemini
 An Arduino-based linear motion controller featuring a **DRV8825**, opto-isolated triggering, and a custom calibration engine.
 
 ## 🚀 Features
-- **Silent Operation:** Optimized for TMC2100 stealthChop.
 - **Opto-Isolated Pulse Trigger:** High-pulse (+5V) toggles between Home and Max Limit.
 - **Jog Mode:** Hold the encoder button to move at 8x speed.
 - **Smart Sleep:** Auto-disables motor current after 5s of inactivity.
@@ -19,9 +18,9 @@ An Arduino-based linear motion controller featuring a **DRV8825**, opto-isolated
 ### Pin Mapping
 | Pin | Component | Description |
 | :--- | :--- | :--- |
-| **D2** | TMC2100 STEP | Step pulse output |
-| **D3** | TMC2100 DIR | Direction control |
-| **D4** | TMC2100 EN | Driver Enable (Active LOW) |
+| **D2** | DRV8825 STEP | Step pulse output |
+| **D3** | DRV8825 DIR | Direction control |
+| **D4** | DRV8825 EN | Driver Enable (Active LOW) |
 | **D5** | Encoder A | Rotary Phase A |
 | **D6** | Encoder B | Rotary Phase B |
 | **D7** | Encoder SW | Encoder Push-button |
@@ -68,9 +67,9 @@ To set a new custom travel limit (Safety Stop):
 ---
 
 ## 🔧 Installation Notes
-1. **Driver Current:** Adjust the TMC2100 $V_{ref}$ potentiometer to match your motor's rated current.
+1. **Driver Current:** Adjust the DRV8825 $V_{ref}$ potentiometer to match your motor's rated current.
 2. **Optocoupler:** Ensure the external pulse ground is connected to the Opto-Cathode, not the Arduino Ground, to maintain isolation.
-3. **Heat Sinking:** Ensure a heatsink is attached to the TMC2100 for high-speed Jog operations.
+3. **Heat Sinking:** Ensure a heatsink is attached to the DRV8825 for high-speed Jog operations.
 
 ---
 
@@ -84,7 +83,7 @@ To set a new custom travel limit (Safety Stop):
 
 ## 🛠 Troubleshooting Guide
 
-This section covers common issues related to the **TMC2100 driver**, **T8 lead screw mechanics**, and **opto-isolated signaling**.
+This section covers common issues related to the **TMC2100 driver or DRV8825**, **T8 lead screw mechanics**, and **opto-isolated signaling**.
 
 ### 1. Motor & Motion Issues
 * **Motor Vibrates but Does Not Move:**
@@ -103,7 +102,7 @@ This section covers common issues related to the **TMC2100 driver**, **T8 lead s
 
 ### 2. Driver & Power Issues
 * **Driver Shuts Down (Thermal Cutoff):**
-    * **Cause:** TMC2100 is overheating.
+    * **Cause:** TMC2100 or DRV8825  is overheating.
     * **Solution:** Even in SilentStepMode, these drivers get hot. Ensure the heatsink is properly seated with thermal tape. If the board is enclosed in a 40mm housing, a small 5V cooling fan is highly recommended.
 * **Arduino Resets when Motor Starts:**
     * **Cause:** Voltage spikes or sags on the power rail.
@@ -123,7 +122,7 @@ This section covers common issues related to the **TMC2100 driver**, **T8 lead s
 ### 1. Power Supply Rail (5V Regulation)
 | Signal | Component A | Component B | Purpose |
 | :--- | :--- | :--- | :--- |
-| **V_INPUT** | DC Terminal (+) | Regulator (VIN), TMC2100 (VMOT) | Main Motor Power (12-24V) |
+| **V_INPUT** | DC Terminal (+) | Regulator (VIN), TMC2100 or DRV8825  (VMOT) | Main Motor Power (12-24V) |
 | **GND** | DC Terminal (-) | All GND Pins (Nano, TMC, Reg, Opto) | Common Ground Plane |
 | **+5V** | Regulator (VOUT) | Nano (5V), Opto (Pin 4), Encoder (VCC) | Logic Power Rail |
 | **FILT_IN** | Capacitor 10uF (+) | V_INPUT / GND | Input Voltage Smoothing |
@@ -146,9 +145,9 @@ This section covers common issues related to the **TMC2100 driver**, **T8 lead s
 ### 3. Logic & Control (Arduino Nano)
 | Signal | Component A | Component B | Purpose |
 | :--- | :--- | :--- | :--- |
-| **STEP** | Arduino D2 | TMC2100 (STEP Pin) | Motor Step Pulses |
-| **DIR** | Arduino D3 | TMC2100 (DIR Pin) | Direction Logic |
-| **ENABLE** | Arduino D4 | TMC2100 (EN Pin) | Motor Power Enable |
+| **STEP** | Arduino D2 | TMC2100 or DRV8825 (STEP Pin) | Motor Step Pulses |
+| **DIR** | Arduino D3 | TMC2100 or DRV8825 (DIR Pin) | Direction Logic |
+| **ENABLE** | Arduino D4 | TMC2100 or DRV8825 (EN Pin) | Motor Power Enable |
 | **ENC_A** | Arduino D5 | Rotary Encoder (A) | Rotation Sensing |
 | **ENC_B** | Arduino D6 | Rotary Encoder (B) | Rotation Sensing |
 | **ENC_SW** | Arduino D7 | Rotary Encoder (SW) | Button Press Sensing |
